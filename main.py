@@ -1,5 +1,6 @@
 import discord
 import os
+import re
 import shutil
 import asyncio
 import logging
@@ -22,6 +23,7 @@ except Exception:
     from config import Config
 
 from voice_client import MultiAudio
+from cm_list import CreateView
 from audio_source import StreamAudioData as SAD
 
 os.makedirs(Config.voice_dir, exist_ok=True)
@@ -32,7 +34,7 @@ os.makedirs(Config.voice_dir, exist_ok=True)
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
-client = commands.Bot(command_prefix=Config.prefix,intents=intents)
+client = commands.Bot(command_prefix=Config.prefix, strip_after_prefix=True, intents=intents)
 g_opts:Dict[int, 'DataInfo'] = {}
 
 
@@ -49,46 +51,16 @@ async def on_ready():
 
 
 @client.command()
-async def play(ctx:commands.Context, count:int):
-    print('ok')
-    guild = ctx.guild
-    if not guild: return
-    gid = ctx.guild.id
-    voice = ctx.author.voice
-
-    # 読み上げ
-    # 発言者がチャンネルに入っているか
-    if not ctx.author.voice:
-        return
-
-    # # countが ちゃんと数字になるか！
-    # try: count = int(count)
-    # except Exception: return
-
-    print(f'\n#今世紀最大 検知！ x{count} : {guild.name} ({ctx.channel.name})')
-    print( ctx.author.name +" (",ctx.author.display_name,')')
-
-    if voice.channel and not guild.voice_client:
-        await join(ctx)
-
-    try:
-        for _ in range(count):
-            await g_opts[gid].play_konseiki()
-    except KeyError:pass
-
-@client.command()
-async def ts(ctx):
-    print('ts')
-
-@client.command()
 async def join(ctx:commands.Context):
     if vc := ctx.author.voice:
-        gid = ctx.guild.id
         print(f'{ctx.guild.name} : #join')
-        try: await vc.channel.connect(self_deaf=True)
-        except discord.ClientException: return
-        g_opts[gid] = DataInfo(ctx.guild)
+        await _join(channel=vc.channel, guild=ctx.guild)
         return True
+
+async def _join(channel:discord.VoiceChannel, guild:discord.Guild):
+    try: await channel.connect(self_deaf=True)
+    except discord.ClientException: return
+    g_opts[guild.id] = DataInfo(guild)
 
 
 @client.command()
@@ -112,6 +84,31 @@ async def _bye(guild:discord.Guild):
     except Exception: pass
 
 
+@client.command()
+async def add(ctx:commands.Context, name):
+
+    reply = ctx.reply
+    if not ctx.message.attachments:
+        await reply(embed=discord.Embed(title='ファイルを添付してから出直してきてね ;w;',colour=discord.Colour.dark_grey()) ,delete_after=10.0)
+        return
+
+    file = ctx.message.attachments[0]
+    if not '.' in name:
+        ext = re.match(r'.*(\..+?$)',file.filename).group(1)
+        name += ext
+    path = Path(f'{Config.voice_dir}{name}').resolve()
+    
+    try:
+        await file.save(path)
+    except Exception:
+        await reply(embed=discord.Embed(title='保存に失敗しました ;w;',colour=discord.Colour.dark_grey()) ,delete_after=10.0)
+    else:
+        await reply(embed=discord.Embed(title='保存に成功しました =)',colour=discord.Colour.dark_grey()) ,delete_after=10.0)
+
+
+@client.command()
+async def list(ctx:commands.Context):
+    await ctx.send(view=CreateView(play_konseiki_from_interaction))
 
 #---------------------------------
 
@@ -123,31 +120,42 @@ async def on_message(message:discord.Message):
     gid = message.guild.id
     voice = message.author.voice
 
-    # 読み上げ
-    # 発言者がチャンネルに入っているか
-    if not message.author.voice:
-        return
-
+    # 発言者がチャンネルに入っているか 
     # 発言者がBotの場合はPass
-    if message.author.bot:
-        return
-    
     # 今世紀最大検知
-    if not '今世紀最大' in message.content:
-        return
+    if message.author.voice and not message.author.bot and '今世紀最大' in message.content:
+        
+        print(f'\n#今世紀最大 検知！  : {guild.name} ({message.channel.name})')
+        print( message.author.name +" (",message.author.display_name,') : '+ message.content)
 
-    print(f'\n#今世紀最大 検知！  : {guild.name} ({message.channel.name})')
-    print( message.author.name +" (",message.author.display_name,') : '+ message.content)
+        if voice.channel and not guild.voice_client:
+            await join(message)
 
-    if voice.channel and not guild.voice_client:
-        await join(message)
-
-    try: await g_opts[gid].play_konseiki()
-    except KeyError:pass
+        try:
+            text = message.content
+            count = 0
+            while '今世紀最大' in text:
+                text = text.replace('今世紀最大', '', 1)
+                if count != 0:
+                    await asyncio.sleep(0.1)
+                await g_opts[gid].play_konseiki()
+                count += 1
+                if count == 10 : break
+        except KeyError:pass
 
     # Fin
     await client.process_commands(message)
 
+
+
+async def play_konseiki_from_interaction(interaction:discord.Interaction, source= None):
+    gid = interaction.guild_id
+
+    if interaction.user.voice:
+        if not interaction.guild.voice_client:
+            await _join(channel=interaction.user.voice.channel, guild=interaction.guild)
+        
+        await g_opts[gid].play_konseiki(source=source)
 
 
 class DataInfo:
@@ -161,9 +169,10 @@ class DataInfo:
         self.client = client
 
 
-    async def play_konseiki(self):
+    async def play_konseiki(self, source= None):
         Vvc = self.MA.add_player(opus=False)
-        source = random.choice(glob(f'{Config.voice_dir}*'))
+        if not source:
+            source = random.choice(glob(f'{Config.voice_dir}*'))
 
         await Vvc.play(SAD(source).Url_Only(), lambda : self.loop.create_task(self.finish(Vvc)))
 
