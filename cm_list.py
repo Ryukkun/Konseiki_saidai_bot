@@ -3,7 +3,7 @@ import re
 import os
 from glob import glob
 from pathlib import Path
-from discord import ui, Interaction, SelectOption ,ButtonStyle, Embed, Guild
+from discord import ui, Interaction, SelectOption ,ButtonStyle, Embed, Guild, Colour, Message
 
 from config import Config
 
@@ -57,7 +57,7 @@ class CreateSelect(ui.Select):
 class CreateSelect2(ui.Select):
     def __init__(self, page, parent:'CreateView') -> None:
 
-        select_opt = [SelectOption(label=Path(_).name, value=_) for _ in parent.split_voice_files[page-1]]
+        select_opt = [SelectOption(label=Path(_).stem, value=_) for _ in parent.split_voice_files[page-1]]
         select_opt[0].default = True
         self.voice_res = select_opt[0].value
         super().__init__(placeholder='今世紀最大ファイル', options=select_opt, row=2)
@@ -96,10 +96,29 @@ class CreateButtonVoiceDel(ui.Button):
         super().__init__(label='音声消去', style=ButtonStyle.red, row=3)
 
     async def callback(self, interaction: Interaction):
-        await interaction.response.defer()
-        
-        os.remove(self.parent.select2.voice_res)
-        await interaction.response.edit_message(view=CreateView(self.parent.play_def))
+        if interaction.permissions.administrator:
+            voice = self.parent.select2.voice_res
+            view = ui.View(timeout=None)
+            view.add_item(VoiceDelYes(voice= voice, message= interaction.message, play_def= self.parent.play_def))
+            await interaction.response.send_message(embed=Embed(title='本当に削除してもいいのかい どっちなんだい！',description=f'ファイル名 : {Path(voice).stem}', colour=Colour.yellow()), view=view, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=Embed(title='この操作には管理者権限が必要です ;w;', colour=Colour.dark_gray()), ephemeral=True)
+
+
+class VoiceDelYes(ui.Button):
+    def __init__(self, voice, message:Message, play_def):
+        self.voice = voice
+        self.message = message
+        self.play_def = play_def
+        super().__init__(label='はい', style=ButtonStyle.green, row=0)
+
+    async def callback(self, interaction: Interaction):
+        if os.path.isfile(self.voice):
+            os.remove(self.voice)
+            await interaction.response.send_message(embed=Embed(title='削除完了 =)',description='*これらのメッセージは消していいよん', colour=Colour.dark_gray()), ephemeral=True)
+            await self.message.edit(view=CreateView(self.play_def))
+        else:
+            await interaction.response.defer()
 
 
 class CreateButtonMessageDel(ui.Button):
