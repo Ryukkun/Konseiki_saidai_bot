@@ -15,7 +15,7 @@ os.chdir(str(_my_dir))
 
 ####  Config
 config_path = str(_my_dir / 'config.py')
-temp_config_path = str(_my_dir / 'pi_yo_6' / 'template' / '_config.py')
+temp_config_path = str(_my_dir / 'template' / '_config.py')
 try:
     from config import Config
 except Exception:
