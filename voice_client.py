@@ -3,6 +3,7 @@ import asyncio
 import time
 import numpy as np
 
+from math import sqrt
 from discord import SpeakingState, opus, Guild
 from discord.ext import commands
 
@@ -10,6 +11,30 @@ from audio_source import StreamAudioData
 
 
 lock = threading.Lock()
+
+
+class _Attribute:
+    def __init__(self, init, min, max, update_asource) -> None:
+        self.get = init
+        self.update_asource = update_asource
+        self.min = min
+        self.max = max
+    
+    async def set(self, num):
+        res = await self._check(num)
+        return res
+
+    async def add(self, num):
+        res = await self._check(self.get + num)
+        return res
+
+    async def _check(self, num):
+        if self.min <= num <= self.max:
+            self.get = num
+            await self.update_asource()
+            return True
+
+
 
 class MultiAudio:
     """
@@ -47,18 +72,19 @@ class MultiAudio:
         return player
 
     def _speaking(self,status: bool):
-        temp = 0
+        playing = 0
         for P in self.Players:
-            if P.Loop:
-                temp += 1
+            if not P.is_paused():
+                playing += 1
         if status:
-            if temp == 0:
+            if playing == 1:
                 self.__speak(SpeakingState.voice)
                 with lock:
                     if not self.doing['run_loop']:
+                        self.doing['run_loop'] = True
                         threading.Thread(target=self.run_loop,daemon=True).start()
         else:
-            if temp == 1:
+            if playing == 0:
                 self.__speak(SpeakingState.none)
 
 
@@ -82,25 +108,32 @@ class MultiAudio:
         send_audio = self.vc.send_audio_packet
         _start = time.perf_counter()
         fin_loop = 0
-        with lock:
-            self.doing['run_loop'] = True
+        self.doing['run_loop'] = True
         while self.loop:
             Bytes = None
             if self.PLen == 1:
                 Bytes = self.P1_read_bytes()
 
             elif self.PLen >= 2:
-                in_data = False
+                byte_numpy = None
+                active_track = 0
+                old_vol = 1
                 for P in self.Players:
                     _Byte = P.read_bytes()
                     if _Byte != None:
-                        _byte_numpy = np.frombuffer(_Byte,np.int16)
-                        if not in_data:
-                            byte_numpy:np.array = _byte_numpy.copy()
-                            in_data = True
+                        active_track += 1
+                        _byte_numpy = np.frombuffer(_Byte, dtype=np.int16)
+                        if active_track == 1:
+                            byte_numpy:np.ndarray = _byte_numpy.copy()
                             continue
-                        byte_numpy += _byte_numpy
-                if in_data:
+
+                        # 音量調節
+                        target_vol = sqrt(active_track*2)
+                        _byte_numpy = _byte_numpy * (target_vol/active_track)
+                        byte_numpy = byte_numpy * (target_vol/active_track*(active_track-1) / old_vol) + _byte_numpy
+                        old_vol = target_vol
+                        
+                if 1 <= active_track:
                     Bytes = byte_numpy.astype(np.int16).tobytes()
 
             # Loop Delay
@@ -123,21 +156,22 @@ class MultiAudio:
             # thread fin
             else:
                 fin_loop += 1
-                if 1500 < fin_loop:
+                if (50 * 20) < fin_loop:
                     break
 
-        with lock:
-            self.doing['run_loop'] = False
+        self.doing['run_loop'] = False
             
 
 class _AudioTrack:
     def __init__(self ,RNum ,opus ,parent:'MultiAudio'):
         self.AudioSource = None
         self._SAD = None
-        self.Pausing = False
+        self.Pausing = True
         self.Parent = parent
         self.RNum = RNum*50
-        self.Timer = 0
+        self.Timer:float = 0.0
+        self.pitch = _Attribute(init=0, min=-60, max=60, update_asource=self.update_asouce_sec)
+        self.speed = _Attribute(init=1.0, min=-0.1, max=3.0, update_asource=self.update_asouce_sec)
         self.read_fin = False
         self.read_loop = False
         self.After = None
@@ -145,25 +179,24 @@ class _AudioTrack:
         self.QBytes = []
         self.RBytes = []
         self.Duration = None
-        self.Loop = False
     
 
     async def play(self,_SAD:StreamAudioData,after):
         self._SAD = _SAD
-        self.Duration = _SAD.St_Sec
-        AudioSource = await _SAD.AudioSource(self.opus)
+        self.Duration = _SAD.st_sec
+        AudioSource = await _SAD.AudioSource(self.opus, speed=self.speed.get, pitch=self.pitch.get)
         # 最初のロードは少し時間かかるから先にロード
         self.QBytes.clear()
         self.RBytes.clear()
         self.AudioSource = AudioSource
-        self.Timer = 0
+        self.Timer = 0.0
         self.read_fin = False
         self.After = after
         self.resume()
 
     def stop(self):
         if self.AudioSource:
-            self._speaking(False)
+            self.pause()
         self.AudioSource = None
         self._SAD = None
 
@@ -185,29 +218,28 @@ class _AudioTrack:
 
     def _speaking(self,status: bool):
         self.Parent._speaking(status=status)
-        self.Loop = status
 
     def skip_time(self, stime:int):
         # n秒 進む
         if 0 < stime:
             if len(self.QBytes) < stime:
-                target_time = self.Timer + stime
+                target_time = int(self.Timer) + stime
                 target_sec = target_time // 50
-                if target_sec > self._SAD.St_Sec:
+                if target_sec > self._SAD.st_sec:
                     self._finish()
                     return
                 self.Parent.CLoop.create_task(self._new_asouce_sec(target_sec))
 
             else:
                 with lock:
-                    self.Timer += stime
+                    self.Timer += float(stime)
                 self.RBytes.extend(self.QBytes[:stime])
                 del self.QBytes[:stime]
 
         # n秒 前に戻る
         elif stime < 0:
             stime = -stime
-            target_time = self.Timer - stime
+            target_time = int(self.Timer) - stime
             if target_time < 0:
                 stime += target_time
 
@@ -219,7 +251,7 @@ class _AudioTrack:
             else:
                 with lock:
                     self.QBytes = self.RBytes[-stime:] + self.QBytes
-                    self.Timer -= stime
+                    self.Timer -= float(stime)
                 del self.RBytes[-stime:]
 
 
@@ -240,7 +272,7 @@ class _AudioTrack:
                         return
 
                     with lock:
-                        self.Timer += 1
+                        self.Timer += (1.0 * self.speed.get)
                         if self.RNum != 0:
                             self.RBytes.append(_byte)
                             if len(self.RBytes) > self.RNum:
@@ -252,11 +284,15 @@ class _AudioTrack:
 
 
     async def _new_asouce_sec(self, sec):
-        self.AudioSource = await self._SAD.AudioSource(self.opus, sec)
-        self.Timer = sec * 50
+        self.AudioSource = await self._SAD.AudioSource(self.opus, sec, speed=self.speed.get, pitch=self.pitch.get)
+        self.Timer = float(sec * 50)
         self.QBytes.clear()
         self.RBytes.clear()
         self.read_fin = False
+
+
+    async def update_asouce_sec(self):
+        await self._new_asouce_sec(self.Timer // 50)
 
 
     def _finish(self):
