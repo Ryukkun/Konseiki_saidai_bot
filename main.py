@@ -5,9 +5,10 @@ import shutil
 import asyncio
 import logging
 import random
+import time
 from glob import glob
 from pathlib import Path
-from discord.ext import commands
+from discord.ext import commands, tasks
 from typing import Dict
 
 _my_dir = Path(__file__).parent
@@ -66,22 +67,9 @@ async def _join(channel:discord.VoiceChannel, guild:discord.Guild):
 @client.command()
 async def bye(ctx:commands.Context):
     guild = ctx.guild
-    vc = guild.voice_client
-    if vc:
-        print(f'{guild.name} : #切断')
-        await _bye(guild)
+    if info := g_opts.get(guild.id):
+        await info.bye()
 
-
-async def _bye(guild:discord.Guild):
-    gid = guild.id
-    vc = guild.voice_client
-
-    g_opts[gid].MA.kill()
-    del g_opts[gid]
-    
-    await asyncio.sleep(0.1)
-    try: await vc.disconnect()
-    except Exception: pass
 
 
 @client.command()
@@ -167,6 +155,8 @@ class DataInfo:
         self.MA = MultiAudio(guild, client, self)
         self.loop = client.loop
         self.client = client
+        self.last_play:float = 0.0
+        self.loop_5.start()
 
 
     async def play_konseiki(self, source= None):
@@ -179,12 +169,40 @@ class DataInfo:
 
     async def finish(self, Vvc):
         self.MA.Players.remove(Vvc)
-
+        sleep = 2.0
         if self.MA.Players:
             return
-        await asyncio.sleep(1.0)
-        if not self.MA.Players:
-            await _bye(self.guild)
+        self.last_play = time.time()
+        await asyncio.sleep(sleep)
+        if not self.MA.Players and (sleep-0.1) <= (time.time() - self.last_play) <= (sleep+0.1):
+            await self.bye()
+
+
+    async def bye(self, text:str='切断'):
+        if g_opts.get(self.gid):
+            self.loop.create_task(self._bye(text))
+
+
+    async def _bye(self, text:str):
+        self.loop_5.stop()
+        self.MA.kill()
+        del g_opts[self.gid]
+        
+        print(f'{self.gn} : #{text}')
+        await asyncio.sleep(0.02)
+        try: await self.vc.disconnect()
+        except Exception: pass
+
+
+    @tasks.loop(seconds=5.0)
+    async def loop_5(self):
+        if not g_opts.get(self.gid):
+            return
+
+        # 強制切断検知
+        mems = self.vc.channel.members
+        if not client.user.id in [_.id for _ in mems]:
+            await self.bye('強制切断')
 
 
 client.run(Config.token, log_level=logging.WARNING)
