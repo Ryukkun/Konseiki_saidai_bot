@@ -21,12 +21,10 @@ class _Attribute:
         self.max = max
     
     async def set(self, num):
-        res = await self._check(num)
-        return res
+        return await self._check(num)
 
     async def add(self, num):
-        res = await self._check(self.get + num)
-        return res
+        return await self._check(self.get + num)
 
     async def _check(self, num):
         if self.min <= num <= self.max:
@@ -145,8 +143,8 @@ class MultiAudio:
                 fin_loop = 0
                 try: send_audio(Bytes, encode=self.Enc_bool)
                 except Exception as e:
-                    print(f'send_audio : {e}')
-
+                    print(f'Error send_audio_packet : {e}')
+                    break
             # thread fin
             else:
                 fin_loop += 1
@@ -222,7 +220,7 @@ class _AudioTrack:
                 if target_sec > self._SAD.st_sec:
                     self._finish()
                     return
-                self.Parent.CLoop.create_task(self._new_asouce_sec(target_sec))
+                self.Parent.CLoop.create_task(self.update_asouce_sec(sec=target_sec))
 
             else:
                 with lock:
@@ -240,7 +238,7 @@ class _AudioTrack:
             if len(self.RBytes) < stime:
                 target_sec = target_time // 50
                 if target_sec < 0: target_sec = 0
-                self.Parent.CLoop.create_task(self._new_asouce_sec(target_sec))
+                self.Parent.CLoop.create_task(self.update_asouce_sec(sec=target_sec))
 
             else:
                 with lock:
@@ -250,7 +248,7 @@ class _AudioTrack:
 
 
 
-    def read_bytes(self, numpy=False):
+    def read_bytes(self):
         if self.AudioSource:            
             # Read Bytes
             if len(self.QBytes) <= (45 * 50):
@@ -272,21 +270,21 @@ class _AudioTrack:
                             if len(self.RBytes) > self.RNum:
                                 del self.RBytes[:len(self.RBytes) - self.RNum]
 
-                    if numpy:
-                        return np.frombuffer(_byte,np.int16)
                     return _byte
 
 
-    async def _new_asouce_sec(self, sec):
+    async def update_asouce_sec(self, time=None, sec=None):
+        if time == None and sec == None:
+            time = self.Timer
+        if time != None:
+            sec = time // 50
+
         self.AudioSource = await self._SAD.AudioSource(self.opus, sec, speed=self.speed.get, pitch=self.pitch.get)
         self.Timer = float(sec * 50)
         self.QBytes.clear()
         self.RBytes.clear()
         self.read_fin = False
 
-
-    async def update_asouce_sec(self):
-        await self._new_asouce_sec(self.Timer // 50)
 
 
     def _finish(self):
